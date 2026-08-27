@@ -13,6 +13,7 @@ screen. It allows clinicians and support staff to order Lab, Radiology,
 Procedure, Vaccine, Medicine, and Package services for a patient --- all
 from one place.
 
+
 ### What you can do here
 
 -   Order any service type using **Search**, **Packages**, or **Order

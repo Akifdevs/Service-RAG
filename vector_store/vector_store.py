@@ -1,7 +1,11 @@
 import json
+import re
 from pathlib import Path
+from typing import List
+
 
 from qdrant_client import QdrantClient
+
 from qdrant_client.models import (
     Distance,
     VectorParams,
@@ -9,13 +13,19 @@ from qdrant_client.models import (
 )
 
 
-# =========================================================
-# Paths
-# =========================================================
+# ============================================================
+# PATHS
+# ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = (
+    Path(__file__).resolve().parent.parent
+)
 
-INPUT_FILE = BASE_DIR / "data" / "embedded_chunks.json"
+INPUT_FILE = (
+    BASE_DIR
+    / "data"
+    / "embedded_chunks.json"
+)
 
 QDRANT_PATH = (
     BASE_DIR
@@ -24,28 +34,86 @@ QDRANT_PATH = (
 )
 
 
-# =========================================================
-# Qdrant Configuration
-# =========================================================
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-COLLECTION_NAME = "service_order"
+BASE_COLLECTION_NAME = "service_order"
 
 VECTOR_SIZE = 384
 
 DISTANCE = Distance.COSINE
 
 
-# =========================================================
-# Load embedded chunks
-# =========================================================
+# ============================================================
+# CLIENT
+# ============================================================
 
-def load_embedded_chunks(file_path):
+def create_qdrant_client():
+
+    QDRANT_PATH.mkdir(
+        parents=True,
+        exist_ok=True
+    )
+
+    return QdrantClient(
+        path=str(QDRANT_PATH)
+    )
+
+
+# ============================================================
+# COLLECTION NAME
+# ============================================================
+
+def build_collection_name(
+    index_version: int
+) -> str:
+
+    return (
+        f"{BASE_COLLECTION_NAME}_v"
+        f"{index_version}"
+    )
+
+
+# ============================================================
+# VERSION PARSING
+# ============================================================
+
+def get_collection_version(
+    collection_name: str
+):
+
+    pattern = (
+        rf"^{re.escape(BASE_COLLECTION_NAME)}_v(\d+)$"
+    )
+
+    match = re.match(
+        pattern,
+        collection_name
+    )
+
+    if not match:
+
+        return None
+
+    return int(
+        match.group(1)
+    )
+
+
+# ============================================================
+# LOAD EMBEDDINGS
+# ============================================================
+
+def load_embedded_chunks(
+    file_path=INPUT_FILE
+):
 
     if not file_path.exists():
+
         raise FileNotFoundError(
             f"Embedded chunks file not found:\n"
-            f"{file_path}\n\n"
-            "Run embedder.py first."
+            f"{file_path}"
         )
 
     with file_path.open(
@@ -56,44 +124,24 @@ def load_embedded_chunks(file_path):
         return json.load(file)
 
 
-# =========================================================
-# Create persistent Qdrant client
-# =========================================================
+# ============================================================
+# CREATE COLLECTION
+# ============================================================
 
-def create_qdrant_client():
-
-    QDRANT_PATH.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    client = QdrantClient(
-        path=str(QDRANT_PATH)
-    )
-
-    return client
-
-
-# =========================================================
-# Create collection
-# =========================================================
-
-def create_collection(client):
+def create_collection(
+    client,
+    collection_name: str
+):
 
     if client.collection_exists(
-        collection_name=COLLECTION_NAME
+        collection_name=collection_name
     ):
-
-        print(
-            f"Collection '{COLLECTION_NAME}' "
-            f"already exists."
-        )
 
         return
 
     client.create_collection(
 
-        collection_name=COLLECTION_NAME,
+        collection_name=collection_name,
 
         vectors_config=VectorParams(
             size=VECTOR_SIZE,
@@ -101,20 +149,20 @@ def create_collection(client):
         )
     )
 
-    print(
-        f"Collection '{COLLECTION_NAME}' created."
-    )
 
+# ============================================================
+# CREATE POINTS
+# ============================================================
 
-# =========================================================
-# Create Qdrant points
-# =========================================================
-
-def create_points(chunks):
+def create_points(
+    chunks: List[dict]
+):
 
     points = []
 
-    for index, chunk in enumerate(chunks):
+    for index, chunk in enumerate(
+        chunks
+    ):
 
         point = PointStruct(
 
@@ -128,9 +176,10 @@ def create_points(chunks):
                     chunk["chunk_id"],
 
                 "document":
-                    chunk["document"]
-                    if "document" in chunk
-                    else "service-order-rag.md",
+                    chunk.get(
+                        "document",
+                        "service-order-rag.md"
+                    ),
 
                 "heading":
                     chunk["heading"],
@@ -151,175 +200,232 @@ def create_points(chunks):
                     chunk["start_line"],
 
                 "end_line":
-                    chunk["end_line"],
+                    chunk["end_line"]
             }
         )
 
-        points.append(point)
+        points.append(
+            point
+        )
 
     return points
 
 
-# =========================================================
-# Insert / update vectors
-# =========================================================
+# ============================================================
+# INSERT POINTS
+# ============================================================
 
-def insert_points(client, points):
+def insert_points(
+    client,
+    collection_name: str,
+    points
+):
+
+    if not points:
+
+        raise ValueError(
+            "Cannot insert zero points."
+        )
 
     client.upsert(
 
-        collection_name=COLLECTION_NAME,
+        collection_name=collection_name,
 
         points=points
     )
 
-    print(
-        f"Inserted/updated {len(points)} vectors."
+
+# ============================================================
+# VERIFY COLLECTION
+# ============================================================
+
+def verify_collection(
+    client,
+    collection_name: str,
+    expected_count: int
+):
+
+    if not client.collection_exists(
+        collection_name=collection_name
+    ):
+
+        raise RuntimeError(
+            f"Collection does not exist:\n"
+            f"{collection_name}"
+        )
+
+    info = client.get_collection(
+        collection_name=collection_name
     )
 
-
-# =========================================================
-# Verify collection
-# =========================================================
-
-def verify_collection(client):
-
-    collection_info = client.get_collection(
-        collection_name=COLLECTION_NAME
+    actual_count = (
+        info.points_count
     )
 
-    print("\nCollection information:")
+    if actual_count != expected_count:
 
-    print(
-        f"Vectors stored: "
-        f"{collection_info.points_count}"
+        raise RuntimeError(
+
+            "Qdrant vector count mismatch.\n"
+
+            f"Expected: {expected_count}\n"
+
+            f"Actual: {actual_count}"
+        )
+
+    return actual_count
+
+
+# ============================================================
+# DELETE COLLECTION
+# ============================================================
+
+def delete_collection(
+    client,
+    collection_name: str
+):
+
+    if not collection_name.startswith(
+        f"{BASE_COLLECTION_NAME}_v"
+    ):
+
+        raise ValueError(
+            "Refusing to delete a collection "
+            "outside the versioned RAG namespace:\n"
+            f"{collection_name}"
+        )
+
+    if client.collection_exists(
+        collection_name=collection_name
+    ):
+
+        client.delete_collection(
+            collection_name=collection_name
+        )
+
+        return True
+
+    return False
+
+
+# ============================================================
+# LIST VERSIONED COLLECTIONS
+# ============================================================
+
+def list_versioned_collections(
+    client
+):
+
+    collections = (
+        client.get_collections()
+        .collections
     )
 
+    versions = []
 
-# =========================================================
-# Main
-# =========================================================
+    for collection in collections:
 
-def main():
+        version = get_collection_version(
+            collection.name
+        )
 
-    print("=" * 60)
-    print("PERSISTENT QDRANT VECTOR STORE")
-    print("=" * 60)
+        if version is not None:
 
-    # -----------------------------------------------------
-    # Load embeddings
-    # -----------------------------------------------------
+            versions.append({
+                "version": version,
+                "collection_name":
+                    collection.name
+            })
 
-    print(
-        f"\nLoading:\n{INPUT_FILE}"
+    versions.sort(
+        key=lambda item:
+            item["version"]
     )
 
-    chunks = load_embedded_chunks(
-        INPUT_FILE
+    return versions
+
+
+# ============================================================
+# RETAIN RECENT VERSIONS
+# ============================================================
+
+def cleanup_old_versions(
+    client,
+    active_version: int,
+    retention_count: int
+):
+
+    versions = (
+        list_versioned_collections(
+            client
+        )
     )
 
-    print(
-        f"Loaded {len(chunks)} embedded chunks."
+    if len(versions) <= retention_count:
+
+        return []
+
+    # --------------------------------------------------------
+    # Never delete the active version.
+    # --------------------------------------------------------
+
+    eligible = [
+
+        item
+
+        for item in versions
+
+        if item["version"] != active_version
+
+    ]
+
+    # --------------------------------------------------------
+    # Keep the newest versions first.
+    # --------------------------------------------------------
+
+    eligible.sort(
+        key=lambda item:
+            item["version"],
+        reverse=True
     )
 
-    # -----------------------------------------------------
-    # Create persistent client
-    # -----------------------------------------------------
+    keep = eligible[
+        :max(
+            retention_count - 1,
+            0
+        )
+    ]
 
-    print(
-        f"\nQdrant storage location:\n"
-        f"{QDRANT_PATH}"
-    )
+    keep_names = {
+        item["collection_name"]
+        for item in keep
+    }
 
-    client = create_qdrant_client()
+    deleted = []
 
-    print(
-        "Persistent Qdrant client created."
-    )
+    for item in versions:
 
-    # -----------------------------------------------------
-    # Create collection
-    # -----------------------------------------------------
+        collection_name = (
+            item["collection_name"]
+        )
 
-    print(
-        f"\nChecking collection: "
-        f"{COLLECTION_NAME}"
-    )
+        version = item["version"]
 
-    create_collection(client)
+        if version == active_version:
 
-    # -----------------------------------------------------
-    # Prepare points
-    # -----------------------------------------------------
+            continue
 
-    print("\nPreparing vectors...")
+        if collection_name in keep_names:
 
-    points = create_points(chunks)
+            continue
 
-    print(
-        f"Prepared {len(points)} points."
-    )
+        if delete_collection(
+            client,
+            collection_name
+        ):
 
-    # -----------------------------------------------------
-    # Insert
-    # -----------------------------------------------------
+            deleted.append(
+                collection_name
+            )
 
-    print("\nUploading vectors...")
-
-    insert_points(
-        client,
-        points
-    )
-
-    # -----------------------------------------------------
-    # Verify
-    # -----------------------------------------------------
-
-    verify_collection(client)
-
-    # -----------------------------------------------------
-    # Final information
-    # -----------------------------------------------------
-
-    print("\n" + "=" * 60)
-    print("PERSISTENT VECTOR STORE READY")
-    print("=" * 60)
-
-    print(
-        f"\nCollection: "
-        f"{COLLECTION_NAME}"
-    )
-
-    print(
-        f"Vector size: "
-        f"{VECTOR_SIZE}"
-    )
-
-    print(
-        "Distance: COSINE"
-    )
-
-    print(
-        f"Vectors: "
-        f"{len(points)}"
-    )
-
-    print(
-        f"\nDatabase location:\n"
-        f"{QDRANT_PATH}"
-    )
-
-    print(
-        "\nThe vectors will remain stored "
-        "after this program exits."
-    )
-
-    client.close()
-
-
-# =========================================================
-# Entry Point
-# =========================================================
-
-if __name__ == "__main__":
-    main()
+    return deleted

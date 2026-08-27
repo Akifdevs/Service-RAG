@@ -4,17 +4,23 @@ from pathlib import Path
 from huggingface_hub import InferenceClient
 from qdrant_client import QdrantClient
 
+from ingestion.manifest import (
+    EMBEDDING_MODEL,
+    get_active_collection_name,
+)
+
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-QDRANT_PATH = BASE_DIR / "vector_store" / "qdrant_data"
 
-COLLECTION_NAME = "service_order"
-
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+QDRANT_PATH = (
+    BASE_DIR
+    / "vector_store"
+    / "qdrant_data"
+)
 
 DEFAULT_TOP_K = 5
 
@@ -51,6 +57,44 @@ def create_qdrant_client():
 
 
 # ============================================================
+# ACTIVE COLLECTION
+# ============================================================
+
+def get_active_collection(
+    qdrant
+):
+    """
+    Get the currently active Qdrant collection
+    from the indexing manifest.
+
+    The manifest is the source of truth.
+    """
+
+    collection_name = (
+        get_active_collection_name()
+    )
+
+    if not collection_name:
+
+        raise RuntimeError(
+            "No active RAG index is available.\n\n"
+            "Run the document synchronization process first."
+        )
+
+    if not qdrant.collection_exists(
+        collection_name=collection_name
+    ):
+
+        raise RuntimeError(
+            "The active RAG collection does not exist.\n\n"
+            f"Collection: {collection_name}\n\n"
+            "Run the document synchronization process."
+        )
+
+    return collection_name
+
+
+# ============================================================
 # EMBEDDING
 # ============================================================
 
@@ -64,8 +108,6 @@ def generate_query_embedding(
         model=EMBEDDING_MODEL
     )
 
-    # Convert NumPy array / list-like output
-    # into a normal Python list.
     return embedding.tolist()
 
 
@@ -73,7 +115,9 @@ def generate_query_embedding(
 # CONTEXT BUILDER
 # ============================================================
 
-def build_context(results):
+def build_context(
+    results
+):
 
     context_parts = []
 
@@ -118,11 +162,11 @@ def build_context(results):
 
             f"Content:\n"
             f"{content}"
-
         )
 
-    return "\n\n" + (
-        "\n\n".join(
+    return (
+        "\n\n"
+        + "\n\n".join(
             context_parts
         )
     )
@@ -146,82 +190,141 @@ def retrieve(
             "query": query,
             "has_evidence": False,
             "results": [],
-            "context": ""
+            "context": "",
+            "collection_name": None
         }
 
-    # --------------------------------------------------------
-    # Clients
-    # --------------------------------------------------------
+    hf_client = None
+    qdrant = None
 
-    hf_client = create_huggingface_client()
+    try:
 
-    qdrant = create_qdrant_client()
+        # ----------------------------------------------------
+        # Clients
+        # ----------------------------------------------------
 
-    # --------------------------------------------------------
-    # Query embedding
-    # --------------------------------------------------------
+        hf_client = (
+            create_huggingface_client()
+        )
 
-    query_vector = generate_query_embedding(
-        hf_client,
-        query
-    )
+        qdrant = (
+            create_qdrant_client()
+        )
 
-    # --------------------------------------------------------
-    # Qdrant search
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # Determine active collection
+        # ----------------------------------------------------
 
-    results = qdrant.query_points(
-        collection_name=COLLECTION_NAME,
-        query=query_vector,
-        limit=top_k,
-        with_payload=True
-    ).points
+        collection_name = (
+            get_active_collection(
+                qdrant
+            )
+        )
 
-    # --------------------------------------------------------
-    # Relevance gate
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # Query embedding
+        # ----------------------------------------------------
 
-    filtered_results = [
+        query_vector = (
+            generate_query_embedding(
+                hf_client,
+                query
+            )
+        )
 
-        result
+        # ----------------------------------------------------
+        # Validate embedding dimension
+        # ----------------------------------------------------
 
-        for result in results
+        if len(query_vector) != 384:
 
-        if result.score >= min_score
+            raise RuntimeError(
+                "Query embedding dimension mismatch.\n"
+                f"Expected: 384\n"
+                f"Received: {len(query_vector)}"
+            )
 
-    ]
+        # ----------------------------------------------------
+        # Qdrant search
+        # ----------------------------------------------------
 
-    if not filtered_results:
+        results = qdrant.query_points(
+
+            collection_name=collection_name,
+
+            query=query_vector,
+
+            limit=top_k,
+
+            with_payload=True
+
+        ).points
+
+        # ----------------------------------------------------
+        # Relevance gate
+        # ----------------------------------------------------
+
+        filtered_results = [
+
+            result
+
+            for result in results
+
+            if result.score >= min_score
+
+        ]
+
+        if not filtered_results:
+
+            return {
+
+                "query":
+                    query,
+
+                "has_evidence":
+                    False,
+
+                "results":
+                    [],
+
+                "context":
+                    "",
+
+                "collection_name":
+                    collection_name
+            }
+
+        # ----------------------------------------------------
+        # Build context
+        # ----------------------------------------------------
+
+        context = build_context(
+            filtered_results
+        )
 
         return {
-            "query": query,
-            "has_evidence": False,
-            "results": [],
-            "context": ""
+
+            "query":
+                query,
+
+            "has_evidence":
+                True,
+
+            "results":
+                filtered_results,
+
+            "context":
+                context,
+
+            "collection_name":
+                collection_name
         }
 
-    # --------------------------------------------------------
-    # Context
-    # --------------------------------------------------------
+    finally:
 
-    context = build_context(
-        filtered_results
-    )
+        if qdrant is not None:
 
-    return {
-
-        "query":
-            query,
-
-        "has_evidence":
-            True,
-
-        "results":
-            filtered_results,
-
-        "context":
-            context
-    }
+            qdrant.close()
 
 
 # ============================================================
@@ -267,6 +370,16 @@ def main():
         )
 
         return
+
+    # --------------------------------------------------------
+    # Active collection
+    # --------------------------------------------------------
+
+    print()
+    print(
+        f"Active collection: "
+        f"{result['collection_name']}"
+    )
 
     # --------------------------------------------------------
     # Results
@@ -330,4 +443,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
