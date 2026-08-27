@@ -1,0 +1,5 @@
+ huggingface_hub
+qdrant-client
+openai
+fastapi
+uvicorn

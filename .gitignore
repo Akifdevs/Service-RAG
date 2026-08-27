@@ -1,0 +1,39 @@
+# Generated RAG data
+data/chunks.json
+data/embedded_chunks.json
+
+
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Local Qdrant databases
+qdrant_storage/
+vector_store/qdrant_data/
+
+# Logs
+*.log
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
