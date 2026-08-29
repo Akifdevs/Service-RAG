@@ -1,21 +1,11 @@
 import logging
+import os
 import uuid
-from typing import Dict
+from typing import Dict, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-
-from config import (
-    API_PREFIX,
-    APP_NAME,
-    APP_VERSION,
-    ALLOWED_ORIGINS,
-    CHAT_MAX_LENGTH,
-    ENVIRONMENT,
-    REFUSAL_MESSAGE,
-)
 
 from rag_pipeline import answer_question
 
@@ -26,17 +16,34 @@ from rag_pipeline import answer_question
 
 logging.basicConfig(
     level=logging.INFO,
-    format=(
-        "%(asctime)s | "
-        "%(levelname)s | "
-        "%(name)s | "
-        "%(message)s"
-    ),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
-logger = logging.getLogger(
-    "strict-rag-api"
+logger = logging.getLogger("strict-rag-api")
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+SERVICE_NAME = "strict-rag"
+API_VERSION = "1.0.0"
+
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:3000,"
+    "http://localhost:5173,"
+    "http://127.0.0.1:3000,"
+    "http://127.0.0.1:5173"
 )
+
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOWED_ORIGINS",
+        DEFAULT_ALLOWED_ORIGINS,
+    ).split(",")
+    if origin.strip()
+]
 
 
 # ============================================================
@@ -44,16 +51,13 @@ logger = logging.getLogger(
 # ============================================================
 
 app = FastAPI(
-
-    title=APP_NAME,
-
+    title="Strict Documentation RAG API",
     description=(
         "Documentation-grounded question answering API. "
         "Answers are returned only after retrieval, "
         "generation, source validation, and claim verification."
     ),
-
-    version=APP_VERSION,
+    version=API_VERSION,
 )
 
 
@@ -61,84 +65,33 @@ app = FastAPI(
 # CORS
 # ============================================================
 
-app.add_middleware(
+# ------------------------------------------------------------
+# Development:
+#
+# The frontend normally runs on:
+#
+#   http://localhost:5173
+#   http://127.0.0.1:5173
+#
+# We allow both localhost and 127.0.0.1.
+#
+# In production, set:
+#
+# ALLOWED_ORIGINS=https://your-frontend-domain.com
+#
+# ------------------------------------------------------------
 
+app.add_middleware(
     CORSMiddleware,
 
     allow_origins=ALLOWED_ORIGINS,
 
     allow_credentials=True,
 
-    allow_methods=[
-        "GET",
-        "POST",
-        "OPTIONS",
-    ],
+    allow_methods=["*"],
 
-    allow_headers=[
-        "Content-Type",
-        "Authorization",
-        "X-Request-ID",
-    ],
+    allow_headers=["*"],
 )
-
-
-# ============================================================
-# REQUEST ID MIDDLEWARE
-# ============================================================
-
-@app.middleware("http")
-async def request_id_middleware(
-    request: Request,
-    call_next
-):
-
-    request_id = (
-        request.headers.get(
-            "X-Request-ID"
-        )
-        or str(uuid.uuid4())
-    )
-
-    request.state.request_id = (
-        request_id
-    )
-
-    try:
-
-        response = await call_next(
-            request
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Unhandled request failure | "
-            "request_id=%s | "
-            "method=%s | "
-            "path=%s",
-            request_id,
-            request.method,
-            request.url.path,
-        )
-
-        response = JSONResponse(
-
-            status_code=500,
-
-            content={
-                "success": False,
-                "answer": REFUSAL_MESSAGE,
-                "error": "Internal server error.",
-                "request_id": request_id,
-            },
-        )
-
-    response.headers[
-        "X-Request-ID"
-    ] = request_id
-
-    return response
 
 
 # ============================================================
@@ -148,16 +101,10 @@ async def request_id_middleware(
 class ChatRequest(BaseModel):
 
     question: str = Field(
-
         ...,
-
         min_length=1,
-
-        max_length=CHAT_MAX_LENGTH,
-
-        description=(
-            "User's documentation question."
-        ),
+        max_length=2000,
+        description="User's documentation question.",
     )
 
 
@@ -171,9 +118,9 @@ class ChatResponse(BaseModel):
 
     answer: str
 
-    error: str | None = None
+    error: Optional[str] = None
 
-    request_id: str | None = None
+    request_id: str
 
 
 # ============================================================
@@ -184,51 +131,40 @@ class ChatResponse(BaseModel):
 def root() -> Dict[str, str]:
 
     return {
-        "service": "strict-rag",
+        "service": SERVICE_NAME,
         "status": "ok",
-        "version": APP_VERSION,
-        "environment": ENVIRONMENT,
+        "version": API_VERSION,
+        "environment": os.getenv(
+            "ENVIRONMENT",
+            "development",
+        ),
     }
 
 
 # ============================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================
 
 @app.get("/health")
 def health() -> Dict[str, str]:
 
-    """
-    Liveness check.
-
-    This endpoint only confirms that the API
-    process is alive.
-    """
-
     return {
         "status": "ok",
-        "service": "strict-rag",
+        "service": SERVICE_NAME,
     }
 
 
 # ============================================================
-# READINESS
+# READINESS CHECK
 # ============================================================
 
 @app.get("/ready")
-def readiness():
-
-    """
-    Readiness check.
-
-    Confirms that the RAG system has an active
-    indexed collection available.
-    """
+def ready() -> Dict[str, str]:
 
     try:
 
         from ingestion.manifest import (
-            get_active_collection_name
+            get_active_collection_name,
         )
 
         collection_name = (
@@ -237,79 +173,15 @@ def readiness():
 
         if not collection_name:
 
-            return JSONResponse(
-
-                status_code=503,
-
-                content={
-                    "status": "not_ready",
-                    "reason": (
-                        "No active RAG collection."
-                    ),
-                },
-            )
-
-        from vector_store.vector_store import (
-            create_qdrant_client
-        )
-
-        client = (
-            create_qdrant_client()
-        )
-
-        try:
-
-            exists = (
-                client.collection_exists(
-                    collection_name=
-                        collection_name
-                )
-            )
-
-            if not exists:
-
-                return JSONResponse(
-
-                    status_code=503,
-
-                    content={
-                        "status": "not_ready",
-                        "reason": (
-                            "Active RAG collection "
-                            "does not exist."
-                        ),
-                    },
-                )
-
-            collection_info = (
-                client.get_collection(
-                    collection_name=
-                        collection_name
-                )
-            )
-
-            if not collection_info.points_count:
-
-                return JSONResponse(
-
-                    status_code=503,
-
-                    content={
-                        "status": "not_ready",
-                        "reason": (
-                            "Active RAG collection "
-                            "contains no vectors."
-                        ),
-                    },
-                )
-
-        finally:
-
-            client.close()
+            return {
+                "status": "not_ready",
+                "service": SERVICE_NAME,
+                "collection": "none",
+            }
 
         return {
             "status": "ready",
-            "service": "strict-rag",
+            "service": SERVICE_NAME,
             "collection": collection_name,
         }
 
@@ -319,52 +191,53 @@ def readiness():
             "Readiness check failed."
         )
 
-        return JSONResponse(
-
-            status_code=503,
-
-            content={
-                "status": "not_ready",
-                "reason": (
-                    "RAG dependencies are unavailable."
-                ),
-            },
-        )
+        return {
+            "status": "not_ready",
+            "service": SERVICE_NAME,
+            "collection": "unknown",
+        }
 
 
 # ============================================================
-# CHAT
+# INTERNAL CHAT HANDLER
 # ============================================================
 
-@app.post(
-    f"{API_PREFIX}/chat",
-    response_model=ChatResponse,
-)
-def chat(
+def process_chat(
     request: ChatRequest,
-    http_request: Request,
+    request_id: str,
 ) -> ChatResponse:
 
-    question = (
-        request.question.strip()
-    )
-
-    request_id = getattr(
-        http_request.state,
-        "request_id",
-        None
-    )
+    question = request.question.strip()
 
     logger.info(
-
-        "Chat request received | "
-        "request_id=%s | "
-        "question_length=%d",
-
+        "Chat request received | request_id=%s",
         request_id,
-
-        len(question),
     )
+
+    # --------------------------------------------------------
+    # Input validation
+    # --------------------------------------------------------
+
+    if not question:
+
+        logger.warning(
+            "Empty question | request_id=%s",
+            request_id,
+        )
+
+        return ChatResponse(
+            success=False,
+            answer=(
+                "Please enter a question about "
+                "the service documentation."
+            ),
+            error="invalid_request",
+            request_id=request_id,
+        )
+
+    # --------------------------------------------------------
+    # RAG pipeline
+    # --------------------------------------------------------
 
     try:
 
@@ -374,90 +247,144 @@ def chat(
 
     except Exception:
 
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # Never expose internal:
+        #
+        # - Qdrant errors
+        # - Hugging Face errors
+        # - Groq errors
+        # - Python exceptions
+        # - file paths
+        # - stack traces
+        #
+        # to the frontend.
+        # ----------------------------------------------------
+
         logger.exception(
-
-            "RAG pipeline failed | "
-            "request_id=%s",
-
+            "RAG pipeline failed | request_id=%s",
             request_id,
         )
 
         return ChatResponse(
-
             success=False,
-
-            answer=REFUSAL_MESSAGE,
-
-            error=(
-                "Unable to process the request."
+            answer=(
+                "I couldn't provide a reliable answer "
+                "from the available documentation."
             ),
-
+            error="rag_service_error",
             request_id=request_id,
         )
+
+    # --------------------------------------------------------
+    # Extract result safely
+    # --------------------------------------------------------
 
     success = bool(
         result.get(
             "success",
-            False
+            False,
         )
     )
 
     answer = str(
         result.get(
             "answer",
-            REFUSAL_MESSAGE
+            "I couldn't provide a reliable answer "
+            "from the available documentation.",
         )
     )
 
     # --------------------------------------------------------
-    # IMPORTANT SECURITY BOUNDARY
-    # --------------------------------------------------------
-    #
-    # Sources, scores, retrieved context,
-    # claims, verifier output, and internal
-    # diagnostics NEVER leave the API.
+    # RAG refusal
     # --------------------------------------------------------
 
-    if success:
+    if not success:
 
         logger.info(
-
-            "Chat request completed | "
-            "request_id=%s | "
-            "success=true",
-
+            "RAG refused answer | request_id=%s",
             request_id,
         )
 
         return ChatResponse(
-
-            success=True,
-
+            success=False,
             answer=answer,
-
-            error=None,
-
+            error="answer_not_available",
             request_id=request_id,
         )
 
-    logger.warning(
+    # --------------------------------------------------------
+    # Successful response
+    # --------------------------------------------------------
 
-        "Chat request rejected | "
+    logger.info(
+        "Chat request completed successfully | "
         "request_id=%s",
-
         request_id,
     )
 
     return ChatResponse(
-
-        success=False,
-
-        answer=REFUSAL_MESSAGE,
-
-        error=(
-            "The documentation did not provide "
-            "a sufficiently reliable answer."
-        ),
-
+        success=True,
+        answer=answer,
+        error=None,
         request_id=request_id,
+    )
+
+
+# ============================================================
+# VERSIONED CHAT ENDPOINT
+# ============================================================
+
+@app.post(
+    "/api/v1/chat",
+    response_model=ChatResponse,
+)
+def chat_v1(
+    request: ChatRequest,
+    http_request: Request,
+) -> ChatResponse:
+
+    # --------------------------------------------------------
+    # Allow frontend to provide an ID if desired.
+    #
+    # Otherwise generate one.
+    # --------------------------------------------------------
+
+    request_id = (
+        http_request.headers.get(
+            "X-Request-ID"
+        )
+        or str(uuid.uuid4())
+    )
+
+    return process_chat(
+        request,
+        request_id,
+    )
+
+
+# ============================================================
+# BACKWARD COMPATIBILITY
+# ============================================================
+
+@app.post(
+    "/chat",
+    response_model=ChatResponse,
+)
+def chat_legacy(
+    request: ChatRequest,
+    http_request: Request,
+) -> ChatResponse:
+
+    request_id = (
+        http_request.headers.get(
+            "X-Request-ID"
+        )
+        or str(uuid.uuid4())
+    )
+
+    return process_chat(
+        request,
+        request_id,
     )
