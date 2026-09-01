@@ -205,9 +205,10 @@ def test_failed_rag_response(
             "success": False,
 
             "answer": (
-                "I couldn't provide a reliable "
-                "answer from the available documentation."
-            ),
+    "I'm not confident enough in the available information to "
+    "answer that accurately. Could you try rephrasing, or ask "
+    "something else about the Service Order Section?"
+),
 
             "sources": [],
 

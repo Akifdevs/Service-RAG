@@ -3,3 +3,4 @@ qdrant-client
 openai
 fastapi
 uvicorn
+python-dotenv

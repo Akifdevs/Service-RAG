@@ -13,7 +13,7 @@ MODEL_NAME = "openai/gpt-oss-20b"
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
-MAX_TOKENS = 1000
+MAX_TOKENS = 2000
 
 
 # ============================================================
@@ -117,6 +117,25 @@ ANSWER STYLE
 Answer the user's question directly and concisely.
 
 Use the terminology from the documentation.
+
+If the documentation presents the relevant information as a
+numbered sequence of steps, an ordered procedure, or a
+bulleted list, reproduce that same structure in the answer
+using markdown syntax:
+
+- Numbered steps in the documentation MUST be returned as a
+  markdown numbered list ("1. ", "2. ", "3. ", ...).
+- Bulleted items in the documentation MUST be returned as a
+  markdown bulleted list ("- ").
+- Tables in the documentation MUST be returned as a markdown
+  table.
+
+Do NOT collapse steps, list items, or table rows into a
+single prose paragraph. Preserve the same order and the same
+level of detail per item as the documentation.
+
+Only write plain prose when the documentation itself presents
+the information as plain prose.
 
 Do not mention the RAG system.
 

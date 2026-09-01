@@ -3,6 +3,13 @@ import os
 import uuid
 from typing import Dict, Optional
 
+from dotenv import load_dotenv
+
+# Load variables from a local .env file (if present) into the
+# process environment. Must run before anything below reads
+# HF_TOKEN / GROQ_API_KEY / ALLOWED_ORIGINS via os.getenv().
+load_dotenv()
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -270,8 +277,9 @@ def process_chat(
         return ChatResponse(
             success=False,
             answer=(
-                "I couldn't provide a reliable answer "
-                "from the available documentation."
+                "I'm not confident enough in the available information to "
+                "answer that accurately. Could you try rephrasing, or ask"
+                "something else about the Service Order Section?"
             ),
             error="rag_service_error",
             request_id=request_id,
@@ -291,8 +299,9 @@ def process_chat(
     answer = str(
         result.get(
             "answer",
-            "I couldn't provide a reliable answer "
-            "from the available documentation.",
+            "I'm not confident enough in the available information to "
+"answer that accurately. Could you try rephrasing, or ask "
+"something else about the Service Order Section?"
         )
     )
 

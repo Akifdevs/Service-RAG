@@ -13,11 +13,12 @@ MODEL_NAME = "openai/gpt-oss-20b"
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
-MAX_TOKENS = 1000
+MAX_TOKENS = 2000
 
 REFUSAL_MESSAGE = (
-    "I couldn't provide a reliable answer "
-    "from the available documentation."
+    "I'm not confident enough in the available information to "
+"answer that accurately. Could you try rephrasing, or ask "
+"something else about the Service Order Section?"
 )
 
 
